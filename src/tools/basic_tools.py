@@ -4,6 +4,8 @@ Tool implementations for the E-commerce Shopping Assistant.
 Each tool is a plain Python function returning a human-readable string.
 The agent calls these by name via the TOOL_REGISTRY at the bottom.
 """
+import re
+import unicodedata
 
 # ---------------------------------------------------------------------------
 # Mock datasets (pretend these come from a real database / API)
@@ -67,6 +69,82 @@ STOCK = {
     "smartwatch": 7, "charger": 200, "speaker": 15, "webcam": 9,
 }
 
+PRODUCT_ALIASES = {
+    "iphones": "iphone",
+    "galaxy": "samsung",
+    "samsungs": "samsung",
+    "pixels": "pixel",
+    "xiaomis": "xiaomi",
+    "laptops": "laptop",
+    "macbooks": "macbook",
+    "tablets": "tablet",
+    "monitors": "monitor",
+    "headphone": "headphones",
+    "earbud": "earbuds",
+    "keyboards": "keyboard",
+    "mice": "mouse",
+    "mouses": "mouse",
+    "smartwatches": "smartwatch",
+    "chargers": "charger",
+    "speakers": "speaker",
+    "webcams": "webcam",
+}
+
+DESTINATION_ALIASES = {
+    "hanoi": "hanoi",
+    "hn": "hanoi",
+    "hcm": "hcm",
+    "hochiminh": "hcm",
+    "hochiminhcity": "hcm",
+    "saigon": "hcm",
+    "sg": "hcm",
+    "tphcm": "hcm",
+    "danang": "danang",
+    "haiphong": "haiphong",
+    "cantho": "cantho",
+    "nhatrang": "nhatrang",
+    "vungtau": "vungtau",
+}
+
+
+def _strip_accents(text: str) -> str:
+    normalized = unicodedata.normalize("NFD", text)
+    text = "".join(ch for ch in normalized if unicodedata.category(ch) != "Mn")
+    return text.replace("đ", "d").replace("Đ", "D")
+
+
+def _normalize_words(text: str) -> str:
+    text = _strip_accents(text).lower()
+    return " ".join(re.findall(r"[a-z0-9]+", text))
+
+
+def _normalize_product_name(product_name: str):
+    words = _normalize_words(product_name)
+    if not words:
+        return None
+
+    compact = words.replace(" ", "")
+    if compact in PRODUCTS:
+        return compact
+    if compact in PRODUCT_ALIASES:
+        return PRODUCT_ALIASES[compact]
+
+    matches = []
+    for word in words.split():
+        key = PRODUCT_ALIASES.get(word, word)
+        if key in PRODUCTS and key not in matches:
+            matches.append(key)
+
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
+def _normalize_destination(destination: str) -> str:
+    words = _normalize_words(destination)
+    compact = words.replace(" ", "")
+    return DESTINATION_ALIASES.get(compact, compact)
+
 
 # ---------------------------------------------------------------------------
 # Tools
@@ -74,6 +152,7 @@ STOCK = {
 
 def calculator(expression: str) -> str:
     """Evaluate a basic arithmetic expression safely."""
+    expression = expression.strip()
     allowed_chars = set("0123456789+-*/(). ")
     if not expression or any(char not in allowed_chars for char in expression):
         return "Invalid expression. Only numbers and basic math operators are allowed."
@@ -85,7 +164,7 @@ def calculator(expression: str) -> str:
 
 def lookup_product_price(product_name: str) -> str:
     """Look up a product's price in USD."""
-    key = product_name.strip().lower()
+    key = _normalize_product_name(product_name)
     if key not in PRODUCTS:
         available = ", ".join(sorted(PRODUCTS.keys()))
         return f"No price found for '{product_name}'. Available products: {available}."
@@ -105,16 +184,16 @@ def get_discount(coupon_code: str) -> str:
 
 def calc_shipping(destination: str) -> str:
     """Calculate the shipping fee (USD) for a destination city."""
-    key = destination.strip().lower().replace(" ", "")
+    key = _normalize_destination(destination)
     if key not in SHIPPING:
         available = ", ".join(sorted(SHIPPING.keys()))
-        return f"No shipping info for '{destination}'. Default fee: $10. Known cities: {available}."
+        return f"UNSUPPORTED_DESTINATION: We do not ship to '{destination}'. Known cities: {available}."
     return f"Shipping to {key}: ${SHIPPING[key]}"
 
 
 def check_stock(product_name: str) -> str:
     """Check how many units of a product are in stock."""
-    key = product_name.strip().lower()
+    key = _normalize_product_name(product_name)
     if key not in STOCK:
         available = ", ".join(sorted(STOCK.keys()))
         return f"No stock info for '{product_name}'. Known products: {available}."
@@ -126,7 +205,7 @@ def check_stock(product_name: str) -> str:
 
 def get_product_weight(product_name: str) -> str:
     """Get the shipping weight (kg) of a product."""
-    key = product_name.strip().lower()
+    key = _normalize_product_name(product_name)
     if key not in PRODUCTS:
         available = ", ".join(sorted(PRODUCTS.keys()))
         return f"No weight info for '{product_name}'. Available products: {available}."
@@ -164,7 +243,8 @@ TOOL_REGISTRY = [
         "name": "calc_shipping",
         "description": (
             "Calculate shipping fee in USD for a destination city. Input is a single city name, e.g. calc_shipping(hanoi). "
-            "Known cities: hanoi, hcm, danang, haiphong, cantho, hue, nhatrang, vungtau, singapore, bangkok, tokyo."
+            "Known cities only: hanoi, hcm, danang, haiphong, cantho, hue, nhatrang, vungtau, singapore, bangkok, tokyo. "
+            "If the destination is unknown, the order cannot be shipped."
         ),
         "function": calc_shipping,
     },

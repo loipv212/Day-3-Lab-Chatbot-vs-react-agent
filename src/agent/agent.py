@@ -57,9 +57,10 @@ STRICT RULES:
 3. To get any product price, you MUST call lookup_product_price. Never guess a price.
 4. To get any coupon discount, you MUST call get_discount. Never assume the percentage.
 5. To get any shipping fee, you MUST call calc_shipping. Never guess the shipping cost.
-6. Output the Action as plain text like calc_shipping(hanoi). Do NOT use markdown, backticks, or JSON.
-7. Provide exactly ONE Action per step, then STOP and wait for the Observation. Do NOT write your own Observation.
-8. Only output 'Final Answer:' AFTER you have gathered every required value via tools and computed the result with the calculator.
+6. To answer stock or availability questions, you MUST call check_stock. Never guess whether an item is in stock.
+7. Output the Action as plain text like calc_shipping(hanoi). Do NOT use markdown, backticks, or JSON.
+8. Provide exactly ONE Action per step, then STOP and wait for the Observation. Do NOT write your own Observation.
+9. Only output 'Final Answer:' AFTER you have gathered every required value via tools and computed the result with the calculator.
 
 EXAMPLE (follow this multi-step pattern):
 Question: Buy 2 keyboards with coupon WINNER, ship to hcm. Total?
@@ -95,6 +96,7 @@ Final Answer: The total is $151.
         # The "scratchpad" accumulates the Thought/Action/Observation history.
         scratchpad = f"Question: {user_input}\n"
         steps = 0
+        tool_calls = 0
 
         while steps < self.max_steps:
             steps += 1
@@ -119,6 +121,17 @@ Final Answer: The total is $151.
             # 2. Check for a Final Answer -> stop the loop.
             final = self._parse_final_answer(content)
             if final is not None:
+                if tool_calls == 0:
+                    logger.log_event(
+                        "AGENT_ERROR",
+                        {"step": steps, "error_code": "PREMATURE_FINAL_ANSWER", "raw": content},
+                    )
+                    scratchpad += (
+                        f"{content}\n"
+                        "Observation: Final Answer rejected because no tools have been used. "
+                        "You must use the required tools first, then answer from their Observations.\n"
+                    )
+                    continue
                 self._log_step(f"  [step {steps}] Final Answer -> {final}")
                 logger.log_event("AGENT_END", {"steps": steps, "status": "final_answer"})
                 return final
@@ -145,6 +158,7 @@ Final Answer: The total is $151.
 
             # 4. Execute the tool and capture the Observation.
             observation = self._execute_tool(tool_name, tool_arg)
+            tool_calls += 1
             self._log_step(f"  [step {steps}] Action: {tool_name}({tool_arg}) -> {observation}")
 
             logger.log_event(
@@ -177,6 +191,7 @@ Final Answer: The total is $151.
         system_prompt = self.get_system_prompt()
         scratchpad = f"Question: {user_input}\n"
         steps = 0
+        tool_calls = 0
 
         while steps < self.max_steps:
             steps += 1
@@ -197,6 +212,21 @@ Final Answer: The total is $151.
             # Final answer?
             final = self._parse_final_answer(content)
             if final is not None:
+                if tool_calls == 0:
+                    logger.log_event(
+                        "AGENT_ERROR",
+                        {"step": steps, "error_code": "PREMATURE_FINAL_ANSWER", "raw": content},
+                    )
+                    yield {
+                        "type": "parser_error", "step": steps, "raw": content,
+                        "usage": usage, "latency_ms": latency_ms,
+                    }
+                    scratchpad += (
+                        f"{content}\n"
+                        "Observation: Final Answer rejected because no tools have been used. "
+                        "You must use the required tools first, then answer from their Observations.\n"
+                    )
+                    continue
                 logger.log_event("AGENT_END", {"steps": steps, "status": "final_answer"})
                 yield {
                     "type": "final", "step": steps, "answer": final,
@@ -231,6 +261,7 @@ Final Answer: The total is $151.
             }
 
             observation = self._execute_tool(tool_name, tool_arg)
+            tool_calls += 1
             logger.log_event(
                 "TOOL_CALL",
                 {"step": steps, "tool": tool_name, "arg": tool_arg, "observation": observation},
