@@ -191,6 +191,19 @@ def run_agent_block(provider, q, max_steps):
     return {"final": final, "tokens": tokens, "latency": latency, "steps": steps}
 
 
+def format_runtime_error(provider_choice, exc):
+    msg = str(exc)
+    hints = {
+        "mimo": "Kiểm tra MIMO_API_KEYS/MIMO_API_KEY, quota của key, và MIMO_BASE_URL trong .env.",
+        "router": "Kiểm tra 9router đã chạy ở localhost:20128, ROUTER_API_KEYS, và ROUTER_BASE_URL trong .env.",
+        "google": "Kiểm tra GEMINI_API_KEYS/GEMINI_API_KEY và tên model Gemini.",
+        "openai": "Kiểm tra OPENAI_API_KEYS/OPENAI_API_KEY và tên model OpenAI.",
+        "local": "Kiểm tra LOCAL_MODEL_PATH trỏ đúng file .gguf.",
+    }
+    hint = hints.get(provider_choice, "Kiểm tra API key, quota, base URL và tên model.")
+    return f"Không gọi được provider '{provider_choice}': {msg}\n\n{hint}"
+
+
 # --------------------------------------------------------------------------
 # Renderers
 # --------------------------------------------------------------------------
@@ -228,6 +241,11 @@ def render_agent(msg, max_steps):
         st.caption(f"🔢 {msg['tokens']} tokens · ⏱️ {msg['latency']} ms · 🔁 {n_tools} bước")
 
 
+def render_error(message):
+    with st.chat_message("assistant", avatar="⚠️"):
+        st.error(message)
+
+
 def render_turn(turn, max_steps):
     with st.chat_message("user", avatar="🧑"):
         st.markdown(turn["question"])
@@ -235,6 +253,8 @@ def render_turn(turn, max_steps):
         render_chatbot(turn["chatbot"])
     if "agent" in turn:
         render_agent(turn["agent"], max_steps)
+    if "error" in turn:
+        render_error(turn["error"])
 
 
 # --------------------------------------------------------------------------
@@ -267,16 +287,20 @@ if question:
 
     turn = {"question": question}
 
-    if mode in ("So sánh", "Chỉ Chatbot"):
-        with st.spinner("Chatbot đang trả lời..."):
-            answer, latency = run_chatbot_block(provider, question)
-        turn["chatbot"] = {"answer": answer, "latency": latency}
-        render_chatbot(turn["chatbot"])
+    try:
+        if mode in ("So sánh", "Chỉ Chatbot"):
+            with st.spinner("Chatbot đang trả lời..."):
+                answer, latency = run_chatbot_block(provider, question)
+            turn["chatbot"] = {"answer": answer, "latency": latency}
+            render_chatbot(turn["chatbot"])
 
-    if mode in ("So sánh", "Chỉ Agent"):
-        with st.spinner("Agent đang suy luận..."):
-            agent_res = run_agent_block(provider, question, max_steps)
-        turn["agent"] = agent_res
-        render_agent(turn["agent"], max_steps)
+        if mode in ("So sánh", "Chỉ Agent"):
+            with st.spinner("Agent đang suy luận..."):
+                agent_res = run_agent_block(provider, question, max_steps)
+            turn["agent"] = agent_res
+            render_agent(turn["agent"], max_steps)
+    except Exception as exc:
+        turn["error"] = format_runtime_error(provider_choice, exc)
+        render_error(turn["error"])
 
     st.session_state.messages.append(turn)

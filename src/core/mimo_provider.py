@@ -1,12 +1,13 @@
 import os
 import time
 from typing import Dict, Any, Optional, Generator
+import httpx
 from openai import OpenAI, RateLimitError, APIError
 from src.core.llm_provider import LLMProvider
 from src.core.key_manager import KeyManager
 
 # Default OpenAI-compatible endpoint for Xiaomi MiMo (token-plan SGP).
-DEFAULT_MIMO_BASE_URL = "https://token-plan-sgp.xiaomimimo.com/v1"
+DEFAULT_MIMO_BASE_URL = "https://opengateway.gitlawb.com/v1"
 
 
 class MiMoProvider(LLMProvider):
@@ -22,14 +23,30 @@ class MiMoProvider(LLMProvider):
         self.base_url = os.getenv("MIMO_BASE_URL", DEFAULT_MIMO_BASE_URL)
         self.key_manager = KeyManager("MIMO")
         active_key = self.key_manager.current() or api_key
-        self.client = OpenAI(api_key=active_key, base_url=self.base_url)
+        if not active_key:
+            raise ValueError("Missing MiMo API key. Set MIMO_API_KEYS or MIMO_API_KEY in .env.")
+        self.http_client = httpx.Client(
+            trust_env=False,
+            headers={"Accept-Encoding": "identity"},
+        )
+        self.client = OpenAI(
+            api_key=active_key,
+            base_url=self.base_url,
+            http_client=self.http_client,
+            default_headers={"Accept-Encoding": "identity"},
+        )
         self.max_retries = max(self.key_manager.count, 1)
 
     def _rebuild_client(self):
         """Switch the client to the next key in the pool."""
         next_key = self.key_manager.rotate()
         if next_key:
-            self.client = OpenAI(api_key=next_key, base_url=self.base_url)
+            self.client = OpenAI(
+                api_key=next_key,
+                base_url=self.base_url,
+                http_client=self.http_client,
+                default_headers={"Accept-Encoding": "identity"},
+            )
 
     def _build_messages(self, prompt: str, system_prompt: Optional[str]):
         messages = []
