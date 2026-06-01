@@ -1,14 +1,14 @@
 """
-Streamlit UI for Lab 3: Chatbot vs ReAct Agent.
+ChatGPT-style Streamlit UI for Lab 3: Chatbot vs ReAct Agent (Layout A: clean single column).
 
 Run it with:
     streamlit run app.py
 
-Features:
-- Pick the LLM provider/model from the sidebar.
-- Choose a mode: Chatbot, ReAct Agent, or Compare (side by side).
-- Watch the agent's Thought -> Action -> Observation steps appear live.
-- See token usage and latency for each run.
+- Sidebar: provider + model (dropdowns), mode (BUTTONS), max steps, samples.
+- Single-column chat. For each question:
+    * Chatbot answer (if mode includes it)
+    * Agent: Final Answer shown, reasoning steps folded inside an expander.
+- Small metrics row (tokens / latency) under each answer.
 """
 import os
 import time
@@ -25,12 +25,34 @@ from src.agent.agent import ReActAgent
 from src.tools import TOOL_REGISTRY
 
 
-st.set_page_config(page_title="Chatbot vs ReAct Agent", page_icon="🤖", layout="wide")
+st.set_page_config(page_title="Chatbot vs ReAct Agent", page_icon="🤖", layout="centered")
+
+st.markdown(
+    """
+    <style>
+      .block-container { padding-top: 2.5rem; max-width: 50rem; }
+      [data-testid="stChatMessage"] { padding: 0.2rem 0.4rem; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 # --------------------------------------------------------------------------
-# Provider builder (respects sidebar selection, falls back to .env)
+# Provider builder
 # --------------------------------------------------------------------------
+PROVIDER_MODELS = {
+    "router": ["cx/gpt-5.5", "cx/gpt-5.4", "cx/gpt-5.4-mini", "Claude_Opus_4.6",
+               "kr/claude-opus-4.7", "ag/gemini-3-flash", "kr/deepseek-3.2", "kr/glm-5"],
+    "mimo": ["mimo-v2.5-pro"],
+    "google": ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-2.5-pro"],
+    "openai": ["gpt-4o", "gpt-4o-mini"],
+    "local": ["phi-3"],
+}
+
+MODES = ["So sánh", "Chỉ Chatbot", "Chỉ Agent"]
+
+
 def build_provider(provider_choice: str, model_name: str):
     provider_choice = provider_choice.lower()
     if provider_choice in ("router", "9router"):
@@ -47,174 +69,214 @@ def build_provider(provider_choice: str, model_name: str):
         from src.core.local_provider import LocalProvider
         path = os.getenv("LOCAL_MODEL_PATH", "./models/Phi-3-mini-4k-instruct-q4.gguf")
         return LocalProvider(model_path=path)
-    # default
     return create_provider()
 
 
 # --------------------------------------------------------------------------
-# Sidebar controls
+# Session state
 # --------------------------------------------------------------------------
-st.sidebar.title("⚙️ Cấu hình")
-
-default_provider = os.getenv("DEFAULT_PROVIDER", "router")
-provider_options = ["router", "mimo", "google", "openai", "local"]
-provider_choice = st.sidebar.selectbox(
-    "Provider",
-    provider_options,
-    index=provider_options.index(default_provider) if default_provider in provider_options else 0,
-)
-
-default_model_map = {
-    "router": "cx/gpt-5.5",
-    "mimo": "mimo-v2.5-pro",
-    "google": "gemini-2.0-flash",
-    "openai": "gpt-4o",
-    "local": "phi-3",
-}
-model_name = st.sidebar.text_input("Model", value=default_model_map.get(provider_choice, ""))
-
-max_steps = st.sidebar.slider("Max steps (agent)", min_value=3, max_value=12, value=8)
-
-mode = st.sidebar.radio(
-    "Chế độ",
-    ["So sánh (Chatbot vs Agent)", "Chỉ Chatbot", "Chỉ ReAct Agent"],
-)
-
-st.sidebar.markdown("---")
-st.sidebar.subheader("Câu hỏi mẫu")
-
-SAMPLE_GROUPS = {
-    "🟢 Đơn giản (1 bước)": [
-        "Giá của macbook là bao nhiêu?",
-        "Mã giảm giá BLACKFRIDAY được giảm bao nhiêu phần trăm?",
-        "Sản phẩm pixel còn hàng không?",
-        "Phí ship tới tokyo là bao nhiêu?",
-    ],
-    "🟡 Nhiều bước (agent thắng)": [
-        "Tôi muốn mua 2 chiếc iphone. Tổng tiền là bao nhiêu?",
-        "Mua 2 iphone và áp dụng mã WINNER (giảm 10%). Tổng tiền?",
-        "Mua 1 laptop và 1 headphones, áp mã SALE20, ship tới hanoi. Tổng cuối cùng?",
-        "Mua 1 macbook và 2 earbuds, áp mã BLACKFRIDAY, ship tới singapore. Tổng cuối cùng?",
-        "Mua 3 smartwatch với mã VIP50 và ship tới danang. Tôi phải trả bao nhiêu?",
-    ],
-    "🔴 Bẫy / Edge case": [
-        "Tôi muốn mua 1 con mouse. Còn hàng không và giá bao nhiêu?",
-        "Mua 1 tablet và 1 monitor, ship tới bangkok. Tổng tiền? (tablet có thể đã hết hàng)",
-        "Mua 2 laptop với mã FREESHIP ship tới tokyo. Tổng cuối cùng?",
-        "Mua 1 iphone với mã FAKE123 ship tới sao hỏa. Tổng tiền?",
-    ],
-}
-
-for group_name, questions in SAMPLE_GROUPS.items():
-    with st.sidebar.expander(group_name):
-        for q in questions:
-            if st.button(q, key=f"sample_{q}", use_container_width=True):
-                st.session_state["question"] = q
-
-st.sidebar.markdown("---")
-st.sidebar.caption("Tools khả dụng:")
-for t in TOOL_REGISTRY:
-    st.sidebar.caption(f"• `{t['name']}`")
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "pending" not in st.session_state:
+    st.session_state.pending = None
+if "mode" not in st.session_state:
+    st.session_state.mode = MODES[0]
 
 
 # --------------------------------------------------------------------------
-# Header
+# Sidebar
+# --------------------------------------------------------------------------
+with st.sidebar:
+    st.title("⚙️ Cấu hình")
+
+    default_provider = os.getenv("DEFAULT_PROVIDER", "router")
+    provider_options = ["router", "mimo", "google", "openai", "local"]
+    provider_choice = st.selectbox(
+        "Provider",
+        provider_options,
+        index=provider_options.index(default_provider) if default_provider in provider_options else 0,
+    )
+
+    model_options = PROVIDER_MODELS.get(provider_choice, [])
+    if model_options:
+        model_name = st.selectbox("Model", model_options, index=0)
+    else:
+        model_name = st.text_input("Model", value="")
+
+    # ---- Mode as BUTTONS (active one is highlighted) ----
+    st.markdown("**Chế độ**")
+    mcols = st.columns(3)
+    mode_labels = {"So sánh": "⚖️ So sánh", "Chỉ Chatbot": "💬 Chatbot", "Chỉ Agent": "🧠 Agent"}
+    for i, m in enumerate(MODES):
+        is_active = st.session_state.mode == m
+        if mcols[i].button(
+            mode_labels[m],
+            key=f"mode_{m}",
+            use_container_width=True,
+            type="primary" if is_active else "secondary",
+        ):
+            st.session_state.mode = m
+            st.rerun()
+
+    max_steps = st.slider("Max steps (agent)", min_value=3, max_value=12, value=8)
+
+    if st.button("🆕 Cuộc trò chuyện mới", use_container_width=True):
+        st.session_state.messages = []
+        st.session_state.pending = None
+        st.rerun()
+
+    st.markdown("---")
+    st.subheader("💡 Câu hỏi mẫu")
+    SAMPLE_GROUPS = {
+        "🟢 Đơn giản": [
+            "Giá của macbook là bao nhiêu?",
+            "Mã giảm giá BLACKFRIDAY giảm bao nhiêu %?",
+            "Sản phẩm pixel còn hàng không?",
+        ],
+        "🟡 Nhiều bước": [
+            "Mua 2 iphone và áp mã WINNER (giảm 10%). Tổng tiền?",
+            "Mua 1 laptop và 1 headphones, áp mã SALE20, ship tới hanoi. Tổng cuối cùng?",
+            "Mua 3 smartwatch với mã VIP50 và ship tới danang. Tôi phải trả bao nhiêu?",
+        ],
+        "🔴 Bẫy": [
+            "Tôi muốn mua 1 con mouse. Còn hàng không và giá bao nhiêu?",
+            "Mua 1 iphone với mã FAKE123 ship tới sao hỏa. Tổng tiền?",
+        ],
+    }
+    for group_name, questions in SAMPLE_GROUPS.items():
+        with st.expander(group_name):
+            for q in questions:
+                if st.button(q, key=f"sample_{q}", use_container_width=True):
+                    st.session_state.pending = q
+                    st.rerun()
+
+    st.markdown("---")
+    st.caption("🛠️ " + " · ".join(f"`{t['name']}`" for t in TOOL_REGISTRY))
+
+
+# --------------------------------------------------------------------------
+# Core runners
+# --------------------------------------------------------------------------
+def run_chatbot_block(provider, q):
+    start = time.time()
+    answer = Chatbot(provider).run(q)
+    return answer, int((time.time() - start) * 1000)
+
+
+def run_agent_block(provider, q, max_steps):
+    """Run agent fully, collecting steps. Returns dict."""
+    agent = ReActAgent(provider, TOOL_REGISTRY, max_steps=max_steps)
+    steps = []
+    tokens = 0
+    latency = 0
+    final = None
+    for ev in agent.run_iter(q):
+        tokens += ev.get("usage", {}).get("total_tokens", 0)
+        latency += ev.get("latency_ms", 0)
+        if ev["type"] == "thought_action":
+            steps.append({"kind": "step", "n": ev["step"], "thought": ev.get("thought") or "",
+                          "tool": ev["tool"], "arg": ev["arg"], "obs": None})
+        elif ev["type"] == "tool_call":
+            # attach observation to the last step
+            if steps and steps[-1]["obs"] is None:
+                steps[-1]["obs"] = ev["observation"]
+            else:
+                steps.append({"kind": "obs", "n": ev["step"], "obs": ev["observation"]})
+        elif ev["type"] == "parser_error":
+            steps.append({"kind": "error", "n": ev["step"]})
+        elif ev["type"] == "final":
+            final = ev["answer"]
+        elif ev["type"] == "timeout":
+            steps.append({"kind": "timeout", "n": ev["step"]})
+    return {"final": final, "tokens": tokens, "latency": latency, "steps": steps}
+
+
+# --------------------------------------------------------------------------
+# Renderers
+# --------------------------------------------------------------------------
+def render_chatbot(msg):
+    with st.chat_message("assistant", avatar="💬"):
+        st.markdown("**💬 Chatbot** (1 lần gọi, không tool)")
+        st.markdown(msg["answer"])
+        st.caption(f"⏱️ {msg['latency']} ms")
+
+
+def render_agent(msg, max_steps):
+    with st.chat_message("assistant", avatar="🧠"):
+        st.markdown("**🧠 ReAct Agent**")
+        steps = msg["steps"]
+        n_tools = sum(1 for s in steps if s["kind"] == "step")
+        with st.expander(f"🔧 Xem {n_tools} bước suy luận (Thought → Action → Observation)"):
+            for s in steps:
+                if s["kind"] == "step":
+                    if s["thought"]:
+                        st.markdown(f"**Bước {s['n']} · Thought:** {s['thought']}")
+                    st.markdown(f"➡️ **Action:** `{s['tool']}({s['arg']})`")
+                    if s["obs"] is not None:
+                        st.code(s["obs"], language="text")
+                    st.divider()
+                elif s["kind"] == "obs":
+                    st.code(s["obs"], language="text")
+                elif s["kind"] == "error":
+                    st.warning(f"⚠️ Bước {s['n']}: PARSER_ERROR (LLM sai format)")
+                elif s["kind"] == "timeout":
+                    st.error(f"⛔ Bước {s['n']}: vượt max_steps")
+        if msg["final"] is not None:
+            st.success(f"✅ {msg['final']}")
+        else:
+            st.error("Không có Final Answer.")
+        st.caption(f"🔢 {msg['tokens']} tokens · ⏱️ {msg['latency']} ms · 🔁 {n_tools} bước")
+
+
+def render_turn(turn, max_steps):
+    with st.chat_message("user", avatar="🧑"):
+        st.markdown(turn["question"])
+    if "chatbot" in turn:
+        render_chatbot(turn["chatbot"])
+    if "agent" in turn:
+        render_agent(turn["agent"], max_steps)
+
+
+# --------------------------------------------------------------------------
+# Main area
 # --------------------------------------------------------------------------
 st.title("🤖 Chatbot vs ReAct Agent")
-st.caption("Lab 3 — Trợ lý mua sắm E-commerce. Xem agent gọi tool từng bước.")
-
-question = st.text_input(
-    "Nhập câu hỏi:",
-    value=st.session_state.get("question", "Mua 1 laptop và 1 headphones, áp mã SALE20, ship tới hanoi. Tổng cuối cùng?"),
-    key="question",
+st.caption(
+    f"Lab 3 · Provider: **{provider_choice}** · Model: **{model_name}** · Chế độ: **{st.session_state.mode}**"
 )
 
-run_btn = st.button("🚀 Chạy", type="primary", use_container_width=True)
+# Render history
+for turn in st.session_state.messages:
+    render_turn(turn, max_steps)
 
+# Input
+typed = st.chat_input("Nhập câu hỏi của bạn...")
+question = typed or st.session_state.pending
+st.session_state.pending = None
 
-# --------------------------------------------------------------------------
-# Rendering helpers
-# --------------------------------------------------------------------------
-def render_chatbot(container, provider, q):
-    with container:
-        st.subheader("💬 Chatbot (baseline)")
-        st.caption("Gọi LLM 1 lần, không có tool.")
-        with st.spinner("Chatbot đang trả lời..."):
-            start = time.time()
-            bot = Chatbot(provider)
-            answer = bot.run(q)
-            elapsed = int((time.time() - start) * 1000)
-        st.success("Hoàn tất")
-        st.markdown("**Trả lời:**")
-        st.write(answer)
-        st.caption(f"⏱️ {elapsed} ms")
+if question:
+    mode = st.session_state.mode
+    with st.chat_message("user", avatar="🧑"):
+        st.markdown(question)
 
-
-def render_agent(container, provider, q, max_steps):
-    with container:
-        st.subheader("🧠 ReAct Agent")
-        st.caption("Vòng lặp Thought → Action → Observation.")
-        agent = ReActAgent(provider, TOOL_REGISTRY, max_steps=max_steps)
-
-        total_tokens = 0
-        total_latency = 0
-        final_answer = None
-        step_area = st.container()
-
-        with st.spinner("Agent đang suy luận..."):
-            for ev in agent.run_iter(q):
-                total_tokens += ev.get("usage", {}).get("total_tokens", 0)
-                total_latency += ev.get("latency_ms", 0)
-
-                if ev["type"] == "thought_action":
-                    with step_area:
-                        with st.chat_message("assistant", avatar="🧠"):
-                            st.markdown(f"**Bước {ev['step']} — Thought**")
-                            if ev.get("thought"):
-                                st.write(ev["thought"])
-                            st.markdown(f"➡️ **Action:** `{ev['tool']}({ev['arg']})`")
-
-                elif ev["type"] == "tool_call":
-                    with step_area:
-                        with st.chat_message("user", avatar="🔧"):
-                            st.markdown(f"**Observation (bước {ev['step']})**")
-                            st.code(ev["observation"], language="text")
-
-                elif ev["type"] == "parser_error":
-                    with step_area:
-                        st.warning(f"⚠️ Bước {ev['step']}: PARSER_ERROR — LLM không xuất đúng `Action:` hoặc `Final Answer:`.")
-                        with st.expander("Xem output thô"):
-                            st.code(ev["raw"], language="text")
-
-                elif ev["type"] == "final":
-                    final_answer = ev["answer"]
-
-                elif ev["type"] == "timeout":
-                    st.error(f"⛔ Vượt quá {max_steps} bước mà chưa có Final Answer.")
-
-        if final_answer is not None:
-            st.success("✅ Final Answer")
-            st.markdown(f"### {final_answer}")
-        st.caption(f"🔢 Tổng token: {total_tokens}  |  ⏱️ Tổng latency: {total_latency} ms")
-
-
-# --------------------------------------------------------------------------
-# Main action
-# --------------------------------------------------------------------------
-if run_btn and question.strip():
     try:
         provider = build_provider(provider_choice, model_name)
     except Exception as exc:
         st.error(f"Không khởi tạo được provider '{provider_choice}': {exc}")
         st.stop()
 
-    if mode == "So sánh (Chatbot vs Agent)":
-        col1, col2 = st.columns(2)
-        render_chatbot(col1, provider, question)
-        render_agent(col2, provider, question, max_steps)
-    elif mode == "Chỉ Chatbot":
-        render_chatbot(st.container(), provider, question)
-    else:
-        render_agent(st.container(), provider, question, max_steps)
-elif run_btn:
-    st.warning("Hãy nhập câu hỏi trước khi chạy.")
+    turn = {"question": question}
+
+    if mode in ("So sánh", "Chỉ Chatbot"):
+        with st.spinner("Chatbot đang trả lời..."):
+            answer, latency = run_chatbot_block(provider, question)
+        turn["chatbot"] = {"answer": answer, "latency": latency}
+        render_chatbot(turn["chatbot"])
+
+    if mode in ("So sánh", "Chỉ Agent"):
+        with st.spinner("Agent đang suy luận..."):
+            agent_res = run_agent_block(provider, question, max_steps)
+        turn["agent"] = agent_res
+        render_agent(turn["agent"], max_steps)
+
+    st.session_state.messages.append(turn)
