@@ -14,6 +14,7 @@ Tôi phụ trách **Chatbot baseline & phần Đánh giá so sánh**.
 - **Modules Implemented**:
   - `src/chatbot.py`: lớp `Chatbot` gọi LLM đúng 1 lần, không tool, để làm mốc so sánh.
   - Bộ 5 test case trong `main.py` (`TEST_CASES`) kèm đáp án đúng (ground truth) để chấm.
+  - Bổ sung test offline trong `tests/test_logic.py` cho các case dễ gây lỗi: sản phẩm số nhiều, địa điểm không hỗ trợ, địa danh tiếng Việt có dấu, và agent trả `Final Answer` quá sớm khi chưa gọi tool.
   - Bảng so sánh Chatbot vs Agent dùng số liệu thật từ log.
 
 - **Code Highlights**:
@@ -55,5 +56,6 @@ Tôi phụ trách **Chatbot baseline & phần Đánh giá so sánh**.
 ## IV. Future Improvements (5 Points)
 
 - **Scalability**: Tự động hóa chấm điểm — so khớp số trong Final Answer với đáp án đúng để tính success rate không cần đọc tay.
-- **Safety**: Thêm câu test dạng "đánh lừa" (sản phẩm không tồn tại, mã sai) để đo độ vững của cả 2 phiên bản.
-- **Performance**: Thêm cột đo "đúng/sai theo từng loại câu" (1 bước vs nhiều bước) để phân tích sâu hơn.
+- **Safety**: Nâng guardrail từ prompt/regex lên native tool-calling hoặc JSON schema để model không thể tự viết `Observation` hay trả `Final Answer` khi chưa gọi tool bắt buộc.
+- **Robustness**: Mở rộng bộ test "đánh lừa" hiện có với nhiều input tự nhiên hơn: tên sản phẩm số nhiều, địa danh viết tắt, coupon sai, sản phẩm hết hàng, và địa điểm không hỗ trợ giao hàng.
+- **Performance**: Thêm cột đo "đúng/sai theo từng loại câu" (1 bước vs nhiều bước) và chạy lại cùng seed/provider để so sánh ổn định hơn giữa Chatbot và Agent.
